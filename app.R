@@ -1,0 +1,137 @@
+
+library(shiny)
+library(tidyverse)
+library(umap)
+library(NMF)
+library(mclust)
+
+# Load TB data
+TBnanostring <- readRDS("TBnanostring.rds")
+
+gene_data <- TBnanostring %>% select(-TB_Status)
+gene_matrix <- as.matrix(gene_data)
+
+# PCA 
+pca_result <- prcomp(gene_matrix, center = TRUE, scale. = FALSE)
+pca_data <- pca_result$x[, 1:2]
+
+# UMAP  
+set.seed(123)
+umap_result <- umap(gene_matrix)
+umap_data <- umap_result$layout
+
+# NMF  
+nmf_matrix <- gene_matrix
+
+for (j in 1:ncol(nmf_matrix)) {
+  nmf_matrix[, j] <- nmf_matrix[, j] - min(nmf_matrix[, j])
+}
+
+set.seed(123)
+nmf_result <- nmf(nmf_matrix, rank = 2, nrun = 10)
+nmf_data <- basis(nmf_result)
+
+# Shiny user interface
+ui <- fluidPage(
+  
+  titlePanel("TB NanoString K-means Clustering"),
+  
+  sidebarLayout(
+    
+    sidebarPanel(
+      
+      # Choose dimension reduction method
+      selectInput("method", "Dimension Reduction Method",
+                  choices = c("PCA", "UMAP", "NMF")),
+      
+      # Choose number of clusters
+      numericInput("clusters", "Cluster count", 3,
+                   min = 1, max = 9)
+    ),
+    
+    mainPanel(
+      
+      plotOutput("plot1"),
+      
+      h3("Clusters vs. TB Status"),
+      tableOutput("table1"),
+      
+      h3("Adjusted Rand Index"),
+      textOutput("ari")
+    )
+  )
+)
+
+# Shiny server
+server <- function(input, output, session) {
+  
+  # Select the dimension reduction data
+  selectedData <- reactive({
+    
+    if (input$method == "PCA") {
+      pca_data
+      
+    } else if (input$method == "UMAP") {
+      umap_data
+      
+    } else {
+      nmf_data
+    }
+  })
+  
+  # Perform k-means clustering
+  clusters <- reactive({
+    
+    set.seed(123)
+    
+    kmeans(selectedData(), centers = input$clusters,
+           nstart = 25)
+  })
+  
+  # Plot the clusters
+  output$plot1 <- renderPlot({
+    
+    palette(hcl.colors(max(2, input$clusters), "Set 2"))
+    
+    # Use different shapes for TB and LTBI
+    point_shapes <- ifelse(TBnanostring$TB_Status == "TB", 16, 17)
+    
+    par(mar = c(5.1, 4.1, 2, 1))
+    
+    plot(selectedData(),
+         col = clusters()$cluster,
+         pch = point_shapes,
+         cex = 2,
+         xlab = paste(input$method, "Dimension 1"),
+         ylab = paste(input$method, "Dimension 2"),
+         main = paste(input$method, "K-means Clustering"))
+    
+    # Add cluster centers
+    points(clusters()$centers, pch = 4, cex = 4, lwd = 4)
+    
+    legend("topright",
+           legend = c("TB", "LTBI"),
+           pch = c(16, 17),
+           title = "TB Status")
+    
+  })
+  
+  # Cross-tabulation of clusters vs. TB status
+  output$table1 <- renderTable({
+    
+    table(Cluster = clusters()$cluster,
+          TB_Status = TBnanostring$TB_Status)
+  })
+  
+  # Adjusted Rand Index
+  output$ari <- renderText({
+
+  adjustedRandIndex(clusters()$cluster,
+                    TBnanostring$TB_Status)
+
+})
+
+}
+
+shinyApp(ui = ui, server = server)
+
